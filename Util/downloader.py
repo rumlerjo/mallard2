@@ -8,9 +8,7 @@ class AsyncVideoProcessor:
     Asynchronous video downloader & processor using yt-dlp and ffmpeg.
     """
 
-    def __init__(self, url: str,
-                 ffmpeg_path="ffmpeg.exe",
-                 ffprobe_path="ffprobe.exe"):
+    def __init__(self, url: str, ffmpeg_path="ffmpeg.exe", ffprobe_path="ffprobe.exe"):
 
         self.url = url
         self.filepath = None
@@ -18,7 +16,7 @@ class AsyncVideoProcessor:
         self.ffmpeg = self._resolve_absolute_path(ffmpeg_path)
         self.ffprobe = self._resolve_absolute_path(ffprobe_path)
 
-    def _resolve_absolute_path(path: str) -> str:
+    def _resolve_absolute_path(self, path: str) -> str:
         """
         Resolve file path from relative to absolute.
         This is required for asyncio.create_subprocess_exec to find ffmpeg and ffprobe.
@@ -67,13 +65,15 @@ class AsyncVideoProcessor:
         return float(stdout.decode().strip())
 
 
-    async def download(self, output_dir="./VideoDownloads"):
+    async def download(self, output_dir="./VideoDownloads") -> str:
 
         os.makedirs(output_dir, exist_ok=True)
 
         ydl_opts = {
             "outtmpl": os.path.join(output_dir, "%(title)s.%(ext)s"),
             "format": "mp4/bestvideo+bestaudio",
+            "merge_output_format": "mp4",
+            "ffmpeg_loaction": self.ffmpeg
         }
 
         def blocking_download():
@@ -93,6 +93,11 @@ class AsyncVideoProcessor:
         base, _ = os.path.splitext(self.filepath)
         output_path = base + ".mp3"
 
+        # -y auto confirm (like in most scripts)
+        # -i input path, in this case our filepath
+        # -vn disables video
+        # -acodec sets codec, LAME is a open source mp3 encoder
+        # -q:a specifies audio quality from 0-6, with lower being higher quality
         await self._run_ffmpeg(
             "-y",
             "-i", self.filepath,
@@ -140,14 +145,20 @@ class AsyncVideoProcessor:
 
         self.filepath = output_path
         return output_path
+    
+
+    def get_filesize(self) -> float:
+        if os.path.exists(self.filepath):
+            file_size = os.path.getsize(self.filepath) # returns in bytes
+            return float(file_size / 1024 ** 2)
 
 
-    def cleanup_file(self):
+    def cleanup_file(self) -> None:
         if self.filepath and os.path.exists(self.filepath):
             os.remove(self.filepath)
 
 
-    def cleanup_download_dir(self, cleanup_dir="./VideoDownloads"):
+    def cleanup_download_dir(self, cleanup_dir="./VideoDownloads") -> None:
         if os.path.exists(cleanup_dir):
             for file in os.listdir(cleanup_dir):
                 os.remove(os.path.join(cleanup_dir, file))
