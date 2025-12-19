@@ -1,6 +1,10 @@
 import os
 import asyncio
 from yt_dlp import YoutubeDL
+from typing import Tuple, Callable, Optional, List
+from dataclasses import dataclass
+import threading
+import logging
 
 
 class AsyncVideoProcessor:
@@ -8,13 +12,14 @@ class AsyncVideoProcessor:
     Asynchronous video downloader & processor using yt-dlp and ffmpeg.
     """
 
-    def __init__(self, url: str, ffmpeg_path="ffmpeg.exe", ffprobe_path="ffprobe.exe"):
+    def __init__(self, url: str, ffmpeg_path="ffmpeg.exe", ffprobe_path="ffprobe.exe") -> AsyncVideoProcessor:
 
         self.url = url
         self.filepath = None
 
         self.ffmpeg = self._resolve_absolute_path(ffmpeg_path)
         self.ffprobe = self._resolve_absolute_path(ffprobe_path)
+
 
     def _resolve_absolute_path(self, path: str) -> str:
         """
@@ -35,7 +40,13 @@ class AsyncVideoProcessor:
         return resolved
 
 
-    async def _run_ffmpeg(self, *args):
+    async def _run_ffmpeg(self, *args) -> Tuple[bytes, bytes]:
+        """
+        Runs ffprobe in a subprocess to get video duration
+        
+        :param args: Arguments for ffmpeg
+        :return: Duration of video downloaded by yt-dlp as a float
+        """
         process = await asyncio.create_subprocess_exec(
             self.ffmpeg,
             *args,
@@ -50,7 +61,13 @@ class AsyncVideoProcessor:
         return stdout, stderr
 
 
-    async def _run_ffprobe(self, *args):
+    async def _run_ffprobe(self, *args) -> float:
+        """
+        Runs ffprobe in a subprocess to get video duration
+        
+        :param args: Arguments for ffprobe
+        :return: Output and errors from ffmpeg run as bytes
+        """
         process = await asyncio.create_subprocess_exec(
             self.ffprobe,
             *args,
@@ -63,11 +80,62 @@ class AsyncVideoProcessor:
             raise RuntimeError(f"ffprobe failed:\n{stderr.decode(errors='ignore')}")
 
         return float(stdout.decode().strip())
+    
+    
+    async def get_estimated_download_size(self) -> float:
+        """
+        Estimates the download size in megabytes without downloading.
+
+        Uses yt-dlp metadata only.
+        :return: Estimated filesize in megabytes
+        """
+
+        def extract_helper():
+            ydl_opts = {
+                "format": "mp4/bestvideo+bestaudio",
+                "skip_download": True,
+                "quiet": True,
+            }
+
+            with YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(self.url, download=False)
+
+            total_bytes = 0
+
+            if "requested_formats" in info:
+                for fmt in info.get("requested_formats"):
+                    size = fmt.get("filesize") or fmt.get("filesize_approx")
+                    if size:
+                        total_bytes += size
+
+            else:
+                size = info.get("filesize") or info.get("filesize_approx")
+                if size:
+                    total_bytes = size
+
+            if total_bytes == 0:
+                duration = info.get("duration")
+                tbr = info.get("tbr")  # total bitrate (kbps)
+                if duration and tbr:
+                    total_bytes = int((tbr * 1000 / 8) * duration)
+
+            if total_bytes == 0:
+                raise RuntimeError("Unable to estimate download size.")
+
+            return total_bytes
+
+        size_bytes = await asyncio.to_thread(extract_helper)
+        return size_bytes / (1024 ** 2)
 
 
     async def download(self, output_dir="./VideoDownloads") -> str:
-
-        os.makedirs(output_dir, exist_ok=True)
+        """
+        Download an MP4 video from this object's specified URL
+        
+        :param output_dir: Output directory for resulting file
+        :return: File path to downloaded video
+        """
+        os.makedirs(output_dir, exist_ok=True) # exist_ok passes exceptions for existing directory
 
         ydl_opts = {
             "outtmpl": os.path.join(output_dir, "%(title)s.%(ext)s"),
@@ -76,17 +144,20 @@ class AsyncVideoProcessor:
             "ffmpeg_loaction": self.ffmpeg
         }
 
-        def blocking_download():
+        def download_helper():
             ydl = YoutubeDL(ydl_opts)
             info = ydl.extract_info(self.url, download=True)
             return os.path.abspath(ydl.prepare_filename(info))
 
-        self.filepath = await asyncio.to_thread(blocking_download)
+        self.filepath = await asyncio.to_thread(download_helper)
         return self.filepath
 
 
     async def convert_to_mp3(self):
-
+        """
+        Converts a downloaded MP4 file to MP3
+        :return: File path of MP3 file
+        """
         if not self.filepath:
             raise ValueError("No file downloaded yet.")
 
@@ -111,8 +182,13 @@ class AsyncVideoProcessor:
         return output_path
 
 
-    async def compress_to_size(self, target_mb: float):
-
+    async def compress_to_size(self, target_mb: float) -> str:
+        """
+        Compresses processed file to a target size
+        
+        :param target_mb: Target compressed size in megabytes
+        :return: Filepath of compressed file
+        """
         if not self.filepath:
             raise ValueError("No file to compress.")
 
@@ -141,24 +217,158 @@ class AsyncVideoProcessor:
             output_path
         )
 
-        os.remove(self.filepath)
+        self.cleanup_file()
 
         self.filepath = output_path
         return output_path
     
 
     def get_filesize(self) -> float:
+        """
+        Gets the filesize of video downloaded
+        
+        :return: Filesize in megabytes
+        """
         if os.path.exists(self.filepath):
             file_size = os.path.getsize(self.filepath) # returns in bytes
             return float(file_size / 1024 ** 2)
 
 
     def cleanup_file(self) -> None:
+        """
+        Removes created file
+        """
         if self.filepath and os.path.exists(self.filepath):
             os.remove(self.filepath)
 
 
-    def cleanup_download_dir(self, cleanup_dir="./VideoDownloads") -> None:
+    def cleanup_download_dir(self, cleanup_dir: str="./VideoDownloads") -> None:
+        """
+        Removes all files in a specified directory
+        :param cleanup_dir: path to directory as string
+        """
         if os.path.exists(cleanup_dir):
             for file in os.listdir(cleanup_dir):
                 os.remove(os.path.join(cleanup_dir, file))
+
+@dataclass
+class VideoJob:
+    url: str
+    target_mb: Optional[float] = None
+    to_mp3: bool = False
+    complete_callback: Optional[Callable[[AsyncVideoProcessor], None]] = None
+    file_too_large_callback: Optional[Callable] = None
+    error_callback: Optional[Callable[[Exception], None]] = None
+
+class VideoProcessingQueue:
+
+    MAX_COMPRESSION_MULT = 3
+
+    def __init__(self, max_concurrent: int = 1):
+        self.max_concurrent = max_concurrent
+        self.loop: asyncio.AbstractEventLoop = None
+        self.queue: asyncio.Queue = None
+        self.thread = threading.Thread(target=self._run_loop, daemon=True)
+        self.workers: List[asyncio.Task[None]] = None
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def stop(self):
+        async def shutdown():
+            await self.queue.join()
+            for _ in range(self.max_concurrent):
+                await self.queue.put(None)
+
+            for task in self.workers:
+                task.cancel()
+
+        asyncio.run_coroutine_threadsafe(shutdown(), self.loop)
+        if self.loop.is_running():
+            self.loop.call_soon_threadsafe(self.loop.stop)
+        
+
+    def enqueue(self, job: VideoJob):
+        if not self.loop:
+            raise RuntimeError("Queue not started")
+        asyncio.run_coroutine_threadsafe(self.queue.put(job), self.loop)
+
+    def _run_loop(self):
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+
+        self.queue = asyncio.Queue()
+
+        self.workers = [
+            self.loop.create_task(self._worker(i))
+            for i in range(self.max_concurrent)
+        ]
+
+        self.loop.run_forever()
+
+        self.loop.run_until_complete(asyncio.gather(self.workers))
+        self.loop.run_until_complete(self.loop.shutdown_asyncgens())
+        self.loop.close()
+
+
+    async def _worker(self, worker_id: int):
+        try:
+            while True:
+                job: VideoJob = await self.queue.get()
+
+                if job is None:
+                    self.queue.task_done()
+                    break
+
+                try:
+                    await self._process_job(job)
+                except Exception as e:
+                    if job.error_callback:
+                        job.error_callback(e)
+                    else:
+                        logging.exception("Worker %d: job failed", worker_id)
+
+                self.queue.task_done()
+
+            if worker_id == 0:
+                self.loop.call_soon_threadsafe(self.loop.stop)
+
+        except asyncio.CancelledError:
+            pass
+
+
+    async def _process_job(self, job: VideoJob) -> None:
+        processor = AsyncVideoProcessor(job.url)
+
+        estimated_dl_size = processor.get_estimated_download_size()
+
+        if estimated_dl_size > self.MAX_COMPRESSION_MULT * job.target_mb:
+            job.file_too_large_callback()
+            return
+
+        await processor.download()
+
+        if job.to_mp3:
+            await processor.convert_to_mp3()
+
+        if job.target_mb and job.target_mb < processor.get_filesize():
+            await processor.compress_to_size(job.target_mb)
+
+        if job.complete_callback:
+            job.complete_callback(processor)
+
+    def next_queue_position(self) -> int:
+        """
+        Returns the next queue position (length + 1)
+
+        :return: Next queue position as int
+        """
+        return self.queue.qsize() + 1
+    
+    def would_enqueue_wait(self) -> bool:
+        """
+        Determines if an enqueue would be immediately processed on
+
+        :return: True if processing would wait, False if it would be immediate
+        """
+        return self.next_queue_position() > len(self.workers)
