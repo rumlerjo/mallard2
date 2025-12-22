@@ -30,6 +30,6 @@ def get_token() -> str:
     return token
 
 if __name__ == "__main__":
-    run(setup_db())
+    # run(setup_db())
     client = run(setup_bot())
     client.run(get_token())

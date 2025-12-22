@@ -5,6 +5,7 @@ from typing import Tuple, Callable, Optional, List
 from dataclasses import dataclass
 import threading
 import logging
+from discord import Interaction
 
 
 class AsyncVideoProcessor:
@@ -12,7 +13,7 @@ class AsyncVideoProcessor:
     Asynchronous video downloader & processor using yt-dlp and ffmpeg.
     """
 
-    def __init__(self, url: str, ffmpeg_path="ffmpeg.exe", ffprobe_path="ffprobe.exe") -> AsyncVideoProcessor:
+    def __init__(self, url: str, ffmpeg_path="ffmpeg", ffprobe_path="ffprobe") -> AsyncVideoProcessor:
 
         self.url = url
         self.filepath = None
@@ -128,7 +129,7 @@ class AsyncVideoProcessor:
         return size_bytes / (1024 ** 2)
 
 
-    async def download(self, output_dir="./VideoDownloads") -> str:
+    async def download(self, output_dir="./Util/VideoDownloads") -> str:
         """
         Download an MP4 video from this object's specified URL
         
@@ -242,7 +243,7 @@ class AsyncVideoProcessor:
             os.remove(self.filepath)
 
 
-    def cleanup_download_dir(self, cleanup_dir: str="./VideoDownloads") -> None:
+    def cleanup_download_dir(self, cleanup_dir: str="./Util/VideoDownloads") -> None:
         """
         Removes all files in a specified directory
         :param cleanup_dir: path to directory as string
@@ -256,9 +257,11 @@ class VideoJob:
     url: str
     target_mb: Optional[float] = None
     to_mp3: bool = False
-    complete_callback: Optional[Callable[[AsyncVideoProcessor], None]] = None
-    file_too_large_callback: Optional[Callable] = None
-    error_callback: Optional[Callable[[Exception], None]] = None
+    complete_callback: Optional[Callable[[str, bool, bool, Interaction], None]] = None
+    file_too_large_callback: Optional[Callable[[bool, Interaction], None]] = None
+    error_callback: Optional[Callable[[Exception, bool, Interaction], None]] = None
+    interaction: Optional[Interaction] = None
+    deferred: bool = False
 
 class VideoProcessingQueue:
 
@@ -324,9 +327,9 @@ class VideoProcessingQueue:
                     await self._process_job(job)
                 except Exception as e:
                     if job.error_callback:
-                        job.error_callback(e)
+                        await job.error_callback(e, job.deferred, job.interaction)
                     else:
-                        logging.exception("Worker %d: job failed", worker_id)
+                        logging.exception(f"Worker {worker_id}: job failed")
 
                 self.queue.task_done()
 
@@ -340,22 +343,27 @@ class VideoProcessingQueue:
     async def _process_job(self, job: VideoJob) -> None:
         processor = AsyncVideoProcessor(job.url)
 
-        estimated_dl_size = processor.get_estimated_download_size()
+        compressed = False
+
+        estimated_dl_size = await processor.get_estimated_download_size()
 
         if estimated_dl_size > self.MAX_COMPRESSION_MULT * job.target_mb:
-            job.file_too_large_callback()
+            await job.file_too_large_callback(job.deferred, job.interaction)
             return
 
-        await processor.download()
+        path = await processor.download()
 
         if job.to_mp3:
-            await processor.convert_to_mp3()
+            path = await processor.convert_to_mp3()
 
         if job.target_mb and job.target_mb < processor.get_filesize():
-            await processor.compress_to_size(job.target_mb)
+            path = await processor.compress_to_size(job.target_mb)
+            compressed = True
 
         if job.complete_callback:
-            job.complete_callback(processor)
+            await job.complete_callback(path, compressed, job.deferred, job.interaction)
+
+        processor.cleanup_file()
 
     def next_queue_position(self) -> int:
         """
