@@ -1,0 +1,1 @@
+from .mallarduser import MallardUser

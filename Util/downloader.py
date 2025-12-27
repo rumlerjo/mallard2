@@ -13,7 +13,7 @@ class AsyncVideoProcessor:
     Asynchronous video downloader & processor using yt-dlp and ffmpeg.
     """
 
-    def __init__(self, url: str, ffmpeg_path="ffmpeg", ffprobe_path="ffprobe") -> AsyncVideoProcessor:
+    def __init__(self, url: str, ffmpeg_path="ffmpeg.exe", ffprobe_path="ffprobe.exe") -> AsyncVideoProcessor:
 
         self.url = url
         self.filepath = None
@@ -154,7 +154,7 @@ class AsyncVideoProcessor:
         return self.filepath
 
 
-    async def convert_to_mp3(self):
+    async def convert_to_mp3(self) -> str:
         """
         Converts a downloaded MP4 file to MP3
         :return: File path of MP3 file
@@ -257,67 +257,73 @@ class VideoJob:
     url: str
     target_mb: Optional[float] = None
     to_mp3: bool = False
-    complete_callback: Optional[Callable[[str, bool, bool, Interaction], None]] = None
-    file_too_large_callback: Optional[Callable[[bool, Interaction], None]] = None
-    error_callback: Optional[Callable[[Exception, bool, Interaction], None]] = None
+    complete_callback: Optional[Callable[[str, bool, Interaction], None]] = None
+    file_too_large_callback: Optional[Callable[[Interaction], None]] = None
+    error_callback: Optional[Callable[[Exception, Interaction], None]] = None
+    delay_reply_callback: Optional[Callable[[Interaction], None]] = None
     interaction: Optional[Interaction] = None
-    deferred: bool = False
 
 class VideoProcessingQueue:
-
+    """
+    Creates a queue for processing video jobs
+    """
     MAX_COMPRESSION_MULT = 3
+    MB_DELAY_REPLY = 25.00
 
     def __init__(self, max_concurrent: int = 1):
         self.max_concurrent = max_concurrent
-        self.loop: asyncio.AbstractEventLoop = None
-        self.queue: asyncio.Queue = None
-        self.thread = threading.Thread(target=self._run_loop, daemon=True)
-        self.workers: List[asyncio.Task[None]] = None
+        self.queue: asyncio.Queue[VideoJob] = asyncio.Queue()
+        self.next_queued: int = 0
+        self.workers: list[asyncio.Task] = []
+        self.started = False
 
     def start(self) -> None:
-        self.thread.start()
+        """
+        Starts download workers
+        """
+        if self.started:
+            return
 
-    def stop(self):
-        async def shutdown():
-            await self.queue.join()
-            for _ in range(self.max_concurrent):
-                await self.queue.put(None)
+        self.started = True
+        for i in range(self.max_concurrent):
+            self.workers.append(asyncio.create_task(self._worker(i)))
 
-            for task in self.workers:
-                task.cancel()
+    async def stop(self) -> None:
+        """
+        Stops download workers
+        """
+        for _ in range(self.max_concurrent):
+            await self.queue.put(None)
 
-        asyncio.run_coroutine_threadsafe(shutdown(), self.loop)
-        if self.loop.is_running():
-            self.loop.call_soon_threadsafe(self.loop.stop)
-        
+        await self.queue.join()
 
-    def enqueue(self, job: VideoJob):
-        if not self.loop:
+        for task in self.workers:
+            task.cancel()
+
+        self.workers.clear()
+        self.started = False
+
+    async def enqueue(self, job: VideoJob) -> None:
+        """
+        Enqueues a video job to the queue to be worked
+        :param job: A VideoJob containing information about the video download
+        """
+        if not self.started:
             raise RuntimeError("Queue not started")
-        asyncio.run_coroutine_threadsafe(self.queue.put(job), self.loop)
 
-    def _run_loop(self):
-        self.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.loop)
+        self.next_queued += 1
 
-        self.queue = asyncio.Queue()
+        await self.queue.put(job)
 
-        self.workers = [
-            self.loop.create_task(self._worker(i))
-            for i in range(self.max_concurrent)
-        ]
+    async def _worker(self, worker_id: int) -> None:
+        """
+        Creates a queue worker
 
-        self.loop.run_forever()
-
-        self.loop.run_until_complete(asyncio.gather(self.workers))
-        self.loop.run_until_complete(self.loop.shutdown_asyncgens())
-        self.loop.close()
-
-
-    async def _worker(self, worker_id: int):
+        :param worker_id: id of the worker being created
+        """
         try:
             while True:
-                job: VideoJob = await self.queue.get()
+                job = await self.queue.get()
 
                 if job is None:
                     self.queue.task_done()
@@ -327,29 +333,35 @@ class VideoProcessingQueue:
                     await self._process_job(job)
                 except Exception as e:
                     if job.error_callback:
-                        await job.error_callback(e, job.deferred, job.interaction)
+                        await job.error_callback(e, job.interaction)
                     else:
                         logging.exception(f"Worker {worker_id}: job failed")
 
+                self.next_queued -= 1
                 self.queue.task_done()
-
-            if worker_id == 0:
-                self.loop.call_soon_threadsafe(self.loop.stop)
 
         except asyncio.CancelledError:
             pass
 
-
-    async def _process_job(self, job: VideoJob) -> None:
+    async def _process_job(self, job: VideoJob):
+        """
+        Process a video download job
+        
+        :param job: Job information for a download
+        """
         processor = AsyncVideoProcessor(job.url)
-
         compressed = False
 
         estimated_dl_size = await processor.get_estimated_download_size()
 
-        if estimated_dl_size > self.MAX_COMPRESSION_MULT * job.target_mb:
-            await job.file_too_large_callback(job.deferred, job.interaction)
+        if job.target_mb and estimated_dl_size > self.MAX_COMPRESSION_MULT * job.target_mb:
+            if job.file_too_large_callback:
+                await job.file_too_large_callback(job.interaction)
             return
+        
+        if job.target_mb and estimated_dl_size >= self.MB_DELAY_REPLY:
+            if job.delay_reply_callback:
+                await job.delay_reply_callback(job.interaction)
 
         path = await processor.download()
 
@@ -361,22 +373,22 @@ class VideoProcessingQueue:
             compressed = True
 
         if job.complete_callback:
-            await job.complete_callback(path, compressed, job.deferred, job.interaction)
+            await job.complete_callback(path, compressed, job.interaction)
 
         processor.cleanup_file()
 
     def next_queue_position(self) -> int:
         """
-        Returns the next queue position (length + 1)
-
-        :return: Next queue position as int
+        Determines what the next queue position would be should an enqueue execute
+        
+        :return: Next queue position
         """
-        return self.queue.qsize() + 1
-    
+        return self.next_queued
+
     def would_enqueue_wait(self) -> bool:
         """
-        Determines if an enqueue would be immediately processed on
-
-        :return: True if processing would wait, False if it would be immediate
+        Determines if an enqueue would queue based on the number of workers
+        
+        :return: True if enqueue would wait
         """
-        return self.next_queue_position() > len(self.workers)
+        return self.next_queue_position() >= self.max_concurrent
