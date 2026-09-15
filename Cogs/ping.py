@@ -13,7 +13,6 @@ class Ping(Cog):
     
     @app_commands.command(name="ping", description="Returns server response time in ms")
     @app_commands.guilds(
-        Object(id="301824927370313728"),
         Object(id="351497847750787084")
     )
     async def ping(self, interaction: Interaction):

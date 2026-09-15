@@ -6,4 +6,6 @@ from discord.ext.commands import Cog
 from .listeners import Listeners
 from .ping import Ping
 from .download import Download
-cog_list: List[Cog] = [Listeners, Ping, Download]
+from .selectable_role import SelectableRole
+
+cog_list: List[Cog] = [Listeners, Ping, Download, SelectableRole]

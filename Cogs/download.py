@@ -21,7 +21,7 @@ class Download(Cog):
     download = app_commands.Group(
         name="download",
         description="Commands for downloading from a URL to mp3 or mp4",
-        guild_ids=[351497847750787084, 301824927370313728]
+        guild_ids=[351497847750787084]
     )
 
     @download.command(name="video", description="Takes URL and outputs in MP4. File upload limits apply.")
@@ -83,4 +83,4 @@ class Download(Cog):
         await self.download_queue.enqueue(new_job)
 
     def cog_unload(self):
-        self.download_queue.stop()
+        self.bot.loop.create_task(self.download_queue.stop())

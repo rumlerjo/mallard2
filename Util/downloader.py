@@ -1,11 +1,11 @@
 import os
 import asyncio
 from yt_dlp import YoutubeDL
-from typing import Tuple, Callable, Optional, List
+from typing import Tuple, Callable, Optional
 from dataclasses import dataclass
-import threading
 import logging
 from discord import Interaction
+from yt_dlp.networking.impersonate import ImpersonateTarget
 
 
 class AsyncVideoProcessor:
@@ -13,7 +13,7 @@ class AsyncVideoProcessor:
     Asynchronous video downloader & processor using yt-dlp and ffmpeg.
     """
 
-    def __init__(self, url: str, ffmpeg_path="ffmpeg.exe", ffprobe_path="ffprobe.exe") -> AsyncVideoProcessor:
+    def __init__(self, url: str, ffmpeg_path="ffmpeg.exe", ffprobe_path="ffprobe.exe") -> 'AsyncVideoProcessor':
 
         self.url = url
         self.filepath = None
@@ -26,6 +26,7 @@ class AsyncVideoProcessor:
         """
         Resolve file path from relative to absolute.
         This is required for asyncio.create_subprocess_exec to find ffmpeg and ffprobe.
+        Assumes executables are packaged within the software's root directory.
         """
         if os.path.isabs(path):
             resolved = path
@@ -43,10 +44,10 @@ class AsyncVideoProcessor:
 
     async def _run_ffmpeg(self, *args) -> Tuple[bytes, bytes]:
         """
-        Runs ffprobe in a subprocess to get video duration
+        Runs ffmpeg in a subprocess
         
         :param args: Arguments for ffmpeg
-        :return: Duration of video downloaded by yt-dlp as a float
+        :return: Stdout and Stderr as bytes
         """
         process = await asyncio.create_subprocess_exec(
             self.ffmpeg,
@@ -86,17 +87,33 @@ class AsyncVideoProcessor:
     async def get_estimated_download_size(self) -> float:
         """
         Estimates the download size in megabytes without downloading.
-
         Uses yt-dlp metadata only.
-        :return: Estimated filesize in megabytes
+        
+        :return: Estimated filesize in megabytes. Returns 0.0 if unable to estimate.
         """
-
         def extract_helper():
             ydl_opts = {
                 "format": "mp4/bestvideo+bestaudio",
                 "skip_download": True,
-                "quiet": True,
+                "verbose": True,
+                "ffmpeg_location": self.ffmpeg
             }
+
+            # Safely resolve cookie path without triggering the Executable check
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            cookie_path = os.path.join(base_dir, "Cookies", "cookies.txt")
+
+            # platform-specific injection
+            if "twitter.com" in self.url or "x.com" in self.url:
+                ydl_opts["cookiefile"] = cookie_path
+                ydl_opts["extractor_args"] = {"twitter": {"api": ["graphql", "syndication", "guest"]}}
+                
+            elif "instagram.com" in self.url:
+                # ydl_opts["impersonate"] = "chrome"
+                ydl_opts["cookiefile"] = cookie_path
+                
+            elif "tiktok.com" in self.url:
+                ydl_opts["impersonate"] = ImpersonateTarget.from_str("chrome")
 
             with YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(self.url, download=False)
@@ -108,7 +125,6 @@ class AsyncVideoProcessor:
                     size = fmt.get("filesize") or fmt.get("filesize_approx")
                     if size:
                         total_bytes += size
-
             else:
                 size = info.get("filesize") or info.get("filesize_approx")
                 if size:
@@ -120,13 +136,11 @@ class AsyncVideoProcessor:
                 if duration and tbr:
                     total_bytes = int((tbr * 1000 / 8) * duration)
 
-            if total_bytes == 0:
-                raise RuntimeError("Unable to estimate download size.")
-
+            # many social media sites won't provide size before download.
             return total_bytes
 
         size_bytes = await asyncio.to_thread(extract_helper)
-        return size_bytes / (1024 ** 2)
+        return size_bytes / (1024 ** 2) if size_bytes > 0 else 0.0
 
 
     async def download(self, output_dir="./Util/VideoDownloads") -> str:
@@ -142,8 +156,25 @@ class AsyncVideoProcessor:
             "outtmpl": os.path.join(output_dir, "%(title)s.%(ext)s"),
             "format": "mp4/bestvideo+bestaudio",
             "merge_output_format": "mp4",
-            "ffmpeg_loaction": self.ffmpeg
+            "verbose": True,
+            "ffmpeg_location": self.ffmpeg
         }
+
+        # Safely resolve cookie path
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        cookie_path = os.path.join(base_dir, "Cookies", "cookies.txt")
+
+        # platform-specific injection
+        if "twitter.com" in self.url or "x.com" in self.url:
+            ydl_opts["cookiefile"] = cookie_path
+            ydl_opts["extractor_args"] = {"twitter": {"api": ["graphql", "syndication", "guest"]}}
+            
+        elif "instagram.com" in self.url:
+            # ydl_opts["impersonate"] = "chrome"
+            ydl_opts["cookiefile"] = cookie_path
+            
+        elif "tiktok.com" in self.url:
+            ydl_opts["impersonate"] = ImpersonateTarget.from_str("chrome")
 
         def download_helper():
             ydl = YoutubeDL(ydl_opts)
@@ -178,7 +209,38 @@ class AsyncVideoProcessor:
             "-q:a", "2",
             output_path
         )
+        
+        self.cleanup_file() # Clean up original MP4
+        self.filepath = output_path
+        return output_path
 
+
+    async def convert_to_gif(self, fps: int = 15, scale: int = 480) -> str:
+        """
+        Converts the downloaded video to a GIF using a high-quality palette filter.
+        
+        :param fps: Frames per second for the resulting GIF
+        :param scale: Width resolution (height is auto-scaled)
+        :return: File path of the GIF file
+        """
+        if not self.filepath:
+            raise ValueError("No file downloaded yet.")
+
+        base, _ = os.path.splitext(self.filepath)
+        output_path = f"{base}.gif"
+
+        # uses FFmpeg's palettegen and paletteuse for much better looking GIFs
+        filter_complex = f"fps={fps},scale={scale}:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse"
+
+        await self._run_ffmpeg(
+            "-y",
+            "-i", self.filepath,
+            "-vf", filter_complex,
+            "-loop", "0",
+            output_path
+        )
+        
+        self.cleanup_file() # Clean up original MP4
         self.filepath = output_path
         return output_path
 
@@ -204,8 +266,16 @@ class AsyncVideoProcessor:
             raise FileNotFoundError(f"Video file not found: {self.filepath}")
 
         target_bytes = target_mb * 1024**2
-        target_bitrate = (target_bytes * 8) / duration
-        target_bitrate_k = int(target_bitrate / 1000)
+        
+        # calculate overall bitrate, then subtract standard audio bitrate (e.g. 128kbps)
+        # to ensure the final file doesn't slightly overshoot the limit.
+        overall_target_bitrate = (target_bytes * 8) / duration
+        audio_bitrate = 128000
+        video_target_bitrate = overall_target_bitrate - audio_bitrate
+        
+        # ensure bitrate doesn't dip below a baseline to prevent complete failure
+        video_target_bitrate = max(100000, video_target_bitrate) 
+        target_bitrate_k = int(video_target_bitrate / 1000)
 
         base, ext = os.path.splitext(self.filepath)
         output_path = f"{base}_compressed{ext}"
@@ -214,7 +284,8 @@ class AsyncVideoProcessor:
             "-y",
             "-i", self.filepath,
             "-b:v", f"{target_bitrate_k}k",
-            "-bufsize", f"{target_bitrate_k}k",
+            "-b:a", "128k", # Force audio bitrate consistency
+            "-bufsize", f"{target_bitrate_k * 2}k", # Standard ffmpeg practice
             output_path
         )
 
@@ -230,9 +301,10 @@ class AsyncVideoProcessor:
         
         :return: Filesize in megabytes
         """
-        if os.path.exists(self.filepath):
+        if self.filepath and os.path.exists(self.filepath):
             file_size = os.path.getsize(self.filepath) # returns in bytes
             return float(file_size / 1024 ** 2)
+        return 0.0
 
 
     def cleanup_file(self) -> None:
@@ -250,13 +322,16 @@ class AsyncVideoProcessor:
         """
         if os.path.exists(cleanup_dir):
             for file in os.listdir(cleanup_dir):
-                os.remove(os.path.join(cleanup_dir, file))
+                file_path = os.path.join(cleanup_dir, file)
+                if os.path.isfile(file_path): # Prevent crashing on subdirectories
+                    os.remove(file_path)
 
 @dataclass
 class VideoJob:
     url: str
     target_mb: Optional[float] = None
     to_mp3: bool = False
+    to_gif: bool = False
     complete_callback: Optional[Callable[[str, bool, Interaction], None]] = None
     file_too_large_callback: Optional[Callable[[Interaction], None]] = None
     error_callback: Optional[Callable[[Exception, Interaction], None]] = None
@@ -354,23 +429,39 @@ class VideoProcessingQueue:
 
         estimated_dl_size = await processor.get_estimated_download_size()
 
-        if job.target_mb and estimated_dl_size > self.MAX_COMPRESSION_MULT * job.target_mb:
-            if job.file_too_large_callback:
-                await job.file_too_large_callback(job.interaction)
-            return
-        
-        if job.target_mb and estimated_dl_size >= self.MB_DELAY_REPLY:
-            if job.delay_reply_callback:
-                await job.delay_reply_callback(job.interaction)
+        # If size > 0, it means we got valid metadata. If 0, we skip the check and download anyway.
+        if job.target_mb and estimated_dl_size > 0:
+            if estimated_dl_size > self.MAX_COMPRESSION_MULT * job.target_mb:
+                if job.file_too_large_callback:
+                    await job.file_too_large_callback(job.interaction)
+                return
+            
+            if estimated_dl_size >= self.MB_DELAY_REPLY:
+                if job.delay_reply_callback:
+                    await job.delay_reply_callback(job.interaction)
 
         path = await processor.download()
 
+        # In case estimation failed, perform the size check post-download
+        actual_size = processor.get_filesize()
+        if job.target_mb and estimated_dl_size == 0.0:
+            if actual_size > self.MAX_COMPRESSION_MULT * job.target_mb:
+                if job.file_too_large_callback:
+                    await job.file_too_large_callback(job.interaction)
+                processor.cleanup_file()
+                return
+
         if job.to_mp3:
             path = await processor.convert_to_mp3()
+        elif job.to_gif:
+            path = await processor.convert_to_gif()
 
+        # Re-check size after format conversion
         if job.target_mb and job.target_mb < processor.get_filesize():
-            path = await processor.compress_to_size(job.target_mb)
-            compressed = True
+            # Don't try to compress GIFs or MP3s using standard video bitrates
+            if not job.to_mp3 and not job.to_gif:
+                path = await processor.compress_to_size(job.target_mb)
+                compressed = True
 
         if job.complete_callback:
             await job.complete_callback(path, compressed, job.interaction)

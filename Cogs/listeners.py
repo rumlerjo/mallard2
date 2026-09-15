@@ -10,5 +10,4 @@ class Listeners(Cog):
         print(f"Logged in as {self.bot.user}")
         print("-----------------------------------------------------")
         synced = await self.bot.tree.sync(guild=Object(id="351497847750787084"))
-        synced += await self.bot.tree.sync(guild=Object(id="301824927370313728"))
         print(f"Synced {len(synced)} commands with the bot.")

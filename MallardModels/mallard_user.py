@@ -15,6 +15,7 @@ class MallardUser:
 
     def __init__(self):
         self.loaded = False
+        self.loaded_user: User = None
         self.name: str = ""
         self.user_id: int = 0
         self.money: float = 0.00
@@ -44,12 +45,24 @@ class MallardUser:
             self.experience = user_doc.experience
             self.needed_experience = user_doc.needed_experience
             self.level_notifs_on = user_doc.level_notifs_on
+
+            self.loaded_user = user_doc
         
         if not user_doc:
             if interaction:
                 self.name = interaction.user.name
                 self.user_id = interaction.user.id
-                await self._create()
+                created_doc = await self._create()
+
+                self.name = created_doc.name
+                self.user_id = created_doc.userid
+                self.money = created_doc.money
+                self.level = created_doc.level
+                self.experience = created_doc.experience
+                self.needed_experience = created_doc.needed_experience
+                self.level_notifs_on = created_doc.level_notifs_on
+    
+                self.loaded_user = created_doc
             else:
                 raise TypeError("User must be initialized by Interaction on creation")
 
@@ -72,16 +85,18 @@ class MallardUser:
     async def save(self) -> None:
         if not self.loaded:
             return
+
+        if not self.loaded_user:
+            self.loaded_user = await self._get()
         
-        user = await self._get()
-        if user:
-            user.name = self.name
-            user.level = self.level
-            user.money = self.money
-            user.experience = self.experience
-            user.needed_experience = self.needed_experience
-            user.level_notifs_on = self.level_notifs_on
-            await user.save()
+        if self.loaded_user:
+            self.loaded_user.name = self.name
+            self.loaded_user.level = self.level
+            self.loaded_user.money = self.money
+            self.loaded_user.experience = self.experience
+            self.loaded_user.needed_experience = self.needed_experience
+            self.loaded_user.level_notifs_on = self.level_notifs_on
+            await self.loaded_user.save_changes()
 
     def add_command_xp(self, xp_to_add: float = 10.00) -> bool:
         if not self.loaded:
