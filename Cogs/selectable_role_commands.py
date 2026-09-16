@@ -227,7 +227,9 @@ class SelectableRoleCommands(Cog):
         return embed, view
 
     async def _sync_guild_message(self, interaction: Interaction, mallard_guild: MallardGuild):
-        """Helper to safely edit the live guild message if it exists."""
+        """
+        Helper to safely edit the live guild message if it exists.
+        """
         msg_id = mallard_guild.selectable_role_message
         channel_id = mallard_guild.selectable_role_channel
 
@@ -244,8 +246,8 @@ class SelectableRoleCommands(Cog):
             msg = await channel.fetch_message(msg_id)
             await msg.edit(embed=embed, view=view)
         except NotFound:
-            mallard_guild.selectable_role_message = None
-            mallard_guild.selectable_role_channel = None
+            mallard_guild.set_selectable_role_message(0)
+            mallard_guild.set_selectable_role_channel(0)
             await mallard_guild.save()
 
     selectable_role = app_commands.Group(
@@ -341,7 +343,14 @@ class SelectableRoleCommands(Cog):
         await mallard_guild.load(interaction=interaction)
 
         if mallard_guild.selectable_role_message and mallard_guild.selectable_role_message != 0:
-            return await interaction.response.send_message("A guild message already exists.", ephemeral=True)
+            try:
+                channel = interaction.guild.get_channel(mallard_guild.selectable_role_channel)
+                msg = await channel.fetch_message(mallard_guild.selectable_role_message)
+                return await interaction.response.send_message("A guild message already exists.", ephemeral=True)
+            except NotFound:
+                mallard_guild.set_selectable_role_message(0)
+                mallard_guild.set_selectable_role_channel(0)
+                await mallard_guild.save()
 
         if not mallard_guild.selectable_roles:
             return await interaction.response.send_message("No roles are configured for self-service yet.", ephemeral=True)
