@@ -6,6 +6,6 @@ from discord.ext.commands import Cog
 from .listeners import Listeners
 from .ping import Ping
 from .download import Download
-from .selectable_role import SelectableRole
+from .selectable_role_commands import SelectableRoleCommands, PersistentRoleView # named this way to not conflict with data model name
 
-cog_list: List[Cog] = [Listeners, Ping, Download, SelectableRole]
+cog_list: List[Cog] = [Listeners, Ping, Download, SelectableRoleCommands]

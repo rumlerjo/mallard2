@@ -95,7 +95,7 @@ class AsyncVideoProcessor:
             ydl_opts = {
                 "format": "mp4/bestvideo+bestaudio",
                 "skip_download": True,
-                "verbose": True,
+                "quiet": True,
                 "ffmpeg_location": self.ffmpeg
             }
 
@@ -156,7 +156,7 @@ class AsyncVideoProcessor:
             "outtmpl": os.path.join(output_dir, "%(title)s.%(ext)s"),
             "format": "mp4/bestvideo+bestaudio",
             "merge_output_format": "mp4",
-            "verbose": True,
+            "quiet": True,
             "ffmpeg_location": self.ffmpeg
         }
 

@@ -28,7 +28,7 @@ class MallardSelectableRole:
 
         if loaded:
             self.loaded = True
-            self.loaded_selectable_role = SelectableRole
+            self.loaded_selectable_role = selectable_role
             return
         
         role_doc = await self._get()
@@ -76,7 +76,18 @@ class MallardSelectableRole:
             self.loaded_selectable_role.role_name = self.role_name
             self.loaded_selectable_role.description = self.description
             self.loaded_selectable_role.emoji = self.emoji
-            await self.loaded_selectable_role.save_changes()
+            await self.loaded_selectable_role.save()
+
+    async def delete(self) -> None:
+        """
+        Deletes the selectable role document completely from the database.
+        """
+        if not self.loaded or not self.loaded_selectable_role:
+            return
+
+        await self.loaded_selectable_role.delete()
+        self.loaded = False
+        self.loaded_selectable_role = None
 
     async def change_description(self, new_description: str) -> None:
         """

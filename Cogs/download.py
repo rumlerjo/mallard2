@@ -21,7 +21,6 @@ class Download(Cog):
     download = app_commands.Group(
         name="download",
         description="Commands for downloading from a URL to mp3 or mp4",
-        guild_ids=[351497847750787084]
     )
 
     @download.command(name="video", description="Takes URL and outputs in MP4. File upload limits apply.")

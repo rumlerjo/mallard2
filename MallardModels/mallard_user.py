@@ -96,7 +96,7 @@ class MallardUser:
             self.loaded_user.experience = self.experience
             self.loaded_user.needed_experience = self.needed_experience
             self.loaded_user.level_notifs_on = self.level_notifs_on
-            await self.loaded_user.save_changes()
+            await self.loaded_user.save()
 
     def add_command_xp(self, xp_to_add: float = 10.00) -> bool:
         if not self.loaded:
